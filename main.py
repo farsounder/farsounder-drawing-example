@@ -14,14 +14,31 @@ from farsounder.proto import nav_api_pb2
 
 Point3D = tuple[float, float, float]
 ZoneId = tuple[int, str]
+
+# This is the depth range, just for the color mapping to look
+# nice in the viewer.
 DEPTH_MIN_M = 0.0
 DEPTH_MAX_M = 25.0
+
+# Smaller intervals mean more detail, bumpier, slower processing
+# Larger intervals mean less detail, smoother, faster processing
 GRID_INTERVAL_M = 1.0
+
+# This is for performance - we send the whole mesh / grids
+# every time so those are sent less, we can send the points more often
+# because we're sending the individual pings as separate streams (and you
+# can also toggle each ping on/off in the viewer which is cool)
 UNGRIDDED_LOG_EVERY_MESSAGES = 1
 GRIDDED_LOG_EVERY_MESSAGES = 10
 GRIDDED_SURFACE_LOG_EVERY_MESSAGES = 30
-LIVE_TUNING_FACTOR = 5.0
-LIVE_MIN_EDGE = 4.0
+
+# You want these to be as small as possible but still have a nice looking
+# surface. The tuning factor is used in the live surface, because the data
+# is spread evenly in angles instead of cartesian space, the max edge length
+# allowed is larger further away. The fixed value is used on the gridded surface
+# because the data is spread evenly in cartesian space.
+TIN_TUNING_FACTOR = 5.0
+TIN_MIN_EDGE = 4.0
 
 
 def time_it(name: str) -> Callable:
@@ -117,8 +134,12 @@ def mesh_vertex_normals(
 
 
 @dataclass(frozen=True)
-class LiveBottomVertex:
+class Vertex:
     position: Point3D
+
+
+@dataclass(frozen=True)
+class LiveVertex(Vertex):
     down_range_m: float
 
 
@@ -165,13 +186,13 @@ def has_valid_navigation(message: nav_api_pb2.TargetData) -> bool:
 def local_bottom_vertices(
     message: nav_api_pb2.TargetData,
     geo_reference: BottomGeoReference,
-) -> tuple[list[LiveBottomVertex], bool]:
+) -> tuple[list[LiveVertex], bool]:
     boat_easting, boat_northing, zone_id = boat_position_to_utm(message)
     zone_changed = geo_reference.update((boat_easting, boat_northing), zone_id)
     heading_deg = message.heading.heading
     local_easting, local_northing = geo_reference.to_local_xy((boat_easting, boat_northing))
 
-    vertices: list[LiveBottomVertex] = []
+    vertices: list[LiveVertex] = []
     for bottom_bin in message.bottom:
         values = (
             bottom_bin.cross_range,
@@ -192,7 +213,7 @@ def local_bottom_vertices(
             heading_deg=heading_deg,
         )
         vertices.append(
-            LiveBottomVertex(
+            LiveVertex(
                 position=(
                     local_easting + east_offset,
                     local_northing + north_offset,
@@ -211,10 +232,8 @@ def get_horizontal_angle_spacing_rad(message: nav_api_pb2.TargetData) -> float |
 
 
 def delaunay_triangle_indices(
-    vertices: list[LiveBottomVertex],
-    hor_angle_spacing_rad: float | None,
-    edge_expansion_factor: float,
-    min_edge: float,
+    vertices: list[Vertex],
+    cull_triangle_func: Callable[[Vertex, Vertex, Vertex], bool],
 ) -> list[tuple[int, int, int]]:
     if len(vertices) < 3:
         return []
@@ -226,41 +245,33 @@ def delaunay_triangle_indices(
         return []
 
     triangle_indices: list[tuple[int, int, int]] = []
-    max_edge_scale = None
-    if hor_angle_spacing_rad is not None:
-        max_edge_scale = math.tan(hor_angle_spacing_rad) * edge_expansion_factor
-
     for simplex in triangulation.simplices:
         index_a, index_b, index_c = (int(simplex[0]), int(simplex[1]), int(simplex[2]))
 
-        if max_edge_scale is None:
+        if cull_triangle_func(vertices[index_a], vertices[index_b], vertices[index_c]):
             continue
-    
-        max_down_range = max(
-            vertices[index_a].down_range_m,
-            vertices[index_b].down_range_m,
-            vertices[index_c].down_range_m,
-        )
-        max_edge_m = max(min_edge, max_down_range * max_edge_scale)
-
-        if max_edge_m <= 0.0:
-            continue
-
-        point_a = vertices[index_a].position
-        point_b = vertices[index_b].position
-        point_c = vertices[index_c].position
-        edge_lengths = (
-            math.dist(point_a, point_b),
-            math.dist(point_b, point_c),
-            math.dist(point_c, point_a),
-        )
-
-        if any(edge_length > max_edge_m for edge_length in edge_lengths):
-            continue
-
         triangle_indices.append((index_a, index_b, index_c))
 
     return triangle_indices
+
+
+def gridded_cell_vertices(
+    cells: dict[tuple[int, int], "GriddedCell"],
+    interval_m: float,
+) -> list[Vertex]:
+    vertices: list[Vertex] = []
+    for (cell_x, cell_y), cell in sorted(cells.items()):
+        position = (
+            (cell_x + 0.5) * interval_m,
+            (cell_y + 0.5) * interval_m,
+            cell.average_depth,
+        )
+        vertices.append(
+            Vertex(
+                position=position,
+            )
+        )
+    return vertices
 
 
 @dataclass
@@ -380,6 +391,7 @@ class GriddedBottomViewer:
 class GriddedBottomSurfaceViewer:
     entity_path: str = "world/bottom/gridded_surface"
     log_every_messages: int = GRIDDED_SURFACE_LOG_EVERY_MESSAGES
+    min_edge: float = TIN_MIN_EDGE
 
     def __post_init__(self) -> None:
         if self.log_every_messages <= 0:
@@ -387,6 +399,9 @@ class GriddedBottomSurfaceViewer:
 
     def should_log(self, current_message: int | None) -> bool:
         return current_message is None or current_message % self.log_every_messages == 0
+
+    def clear(self) -> None:
+        rr.log(self.entity_path, rr.Clear(recursive=False))
 
     @time_it(name="GriddedBottomSurfaceViewer.log_points")
     def log_points(
@@ -399,42 +414,28 @@ class GriddedBottomSurfaceViewer:
             return
 
         if not cells:
+            self.clear()
             return
 
-        cell_keys = sorted(cells)
-        vertex_indices = {cell_key: idx for idx, cell_key in enumerate(cell_keys)}
-        vertex_positions: list[Point3D] = []
-        for cell_x, cell_y in cell_keys:
-            cell = cells[(cell_x, cell_y)]
-            vertex_positions.append(
-                (
-                    (cell_x + 0.5) * interval_m,
-                    (cell_y + 0.5) * interval_m,
-                    cell.average_depth,
-                )
+        vertices = gridded_cell_vertices(cells, interval_m)
+
+        def skip_triangle(a: Vertex, b: Vertex, c: Vertex) -> bool:
+            edge_lengths = (
+                math.dist(a.position, b.position),
+                math.dist(b.position, c.position),
+                math.dist(c.position, a.position),
             )
+            return any(edge_length > self.min_edge for edge_length in edge_lengths)
 
-        triangle_indices: list[tuple[int, int, int]] = []
-        for cell_x, cell_y in cell_keys:
-            quad_keys = (
-                (cell_x, cell_y),
-                (cell_x + 1, cell_y),
-                (cell_x, cell_y + 1),
-                (cell_x + 1, cell_y + 1),
-            )
-            if not all(key in vertex_indices for key in quad_keys):
-                continue
-
-            lower_left = vertex_indices[(cell_x, cell_y)]
-            lower_right = vertex_indices[(cell_x + 1, cell_y)]
-            upper_left = vertex_indices[(cell_x, cell_y + 1)]
-            upper_right = vertex_indices[(cell_x + 1, cell_y + 1)]
-            triangle_indices.append((lower_left, lower_right, upper_left))
-            triangle_indices.append((lower_right, upper_right, upper_left))
-
+        triangle_indices = delaunay_triangle_indices(
+            vertices,
+            cull_triangle_func=skip_triangle,
+        )
         if not triangle_indices:
+            self.clear()
             return
 
+        vertex_positions = [vertex.position for vertex in vertices]
         vertex_normals = mesh_vertex_normals(vertex_positions, triangle_indices)
 
         rr.log(
@@ -453,8 +454,8 @@ class GriddedBottomSurfaceViewer:
 class LiveBottomSurfaceViewer:
     entity_path: str = "world/bottom/live_surface"
     log_every_messages: int = UNGRIDDED_LOG_EVERY_MESSAGES
-    tuning_factor: float = LIVE_TUNING_FACTOR
-    min_edge: float = LIVE_MIN_EDGE
+    tuning_factor: float = TIN_TUNING_FACTOR
+    min_edge: float = TIN_MIN_EDGE
 
     def __post_init__(self) -> None:
         if self.log_every_messages <= 0:
@@ -471,7 +472,7 @@ class LiveBottomSurfaceViewer:
     @time_it(name="LiveBottomSurfaceViewer.log_points")
     def log_points(
         self,
-        vertices: list[LiveBottomVertex],
+        vertices: list[LiveVertex],
         message: nav_api_pb2.TargetData,
         current_message: int | None = None,
     ) -> None:
@@ -482,11 +483,25 @@ class LiveBottomSurfaceViewer:
             self.clear()
             return
 
+        if not (hor_angle_spacing_rad := get_horizontal_angle_spacing_rad(message)):
+            self.clear()
+            return
+        
+
+        def skip_triangle(a: LiveVertex, b: LiveVertex, c: LiveVertex) -> bool:
+            max_down_range = max(a.down_range_m, b.down_range_m, c.down_range_m)
+            max_edge_m = max_down_range * math.tan(hor_angle_spacing_rad) * self.tuning_factor
+            max_edge_m = max(max_edge_m, self.min_edge)
+            edge_lengths = (
+                math.dist(a.position, b.position),
+                math.dist(b.position, c.position),
+                math.dist(c.position, a.position),
+            )
+            return any(edge_length > max_edge_m for edge_length in edge_lengths)
+
         triangle_indices = delaunay_triangle_indices(
             vertices,
-            get_horizontal_angle_spacing_rad(message),
-            self.tuning_factor,
-            self.min_edge, # close range our range based parameterization is too small
+            cull_triangle_func=skip_triangle,
         )
         if not triangle_indices:
             self.clear()
@@ -525,8 +540,9 @@ def main() -> None:
         host="127.0.0.1",
         subscribe=["TargetData"],
     )
-
     sub = subscriber.subscribe(cfg)
+
+    # Lots of viewers / streams for rerun
     geo_reference = BottomGeoReference()
     ungridded_viewer = UnGriddedBottomViewer()
     gridded_viewer = GriddedBottomViewer(interval_m=GRID_INTERVAL_M)
@@ -541,17 +557,17 @@ def main() -> None:
 
         msg_num = message_counter()
 
-        vertices, zone_changed = local_bottom_vertices(message, geo_reference)
+        live_vertices, zone_changed = local_bottom_vertices(message, geo_reference)
 
         if zone_changed:
             ungridded_viewer.reset()
             gridded_viewer.reset()
 
-        if not vertices:
+        if not live_vertices:
             live_surface_viewer.clear()
             return
 
-        points = [vertex.position for vertex in vertices]
+        points = [vertex.position for vertex in live_vertices]
         msg_num = None if zone_changed else msg_num
         ungridded_viewer.log_points(points, current_message=msg_num)
         gridded_viewer.log_points(
@@ -564,7 +580,7 @@ def main() -> None:
             current_message=msg_num,
         )
         live_surface_viewer.log_points(
-            vertices,
+            live_vertices,
             message,
             current_message=msg_num,
         )
