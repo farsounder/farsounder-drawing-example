@@ -1,7 +1,9 @@
+# Simple script to visualize bottom data in ReRun
 import colorsys
 import math
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 
 import rerun as rr
 import utm
@@ -14,6 +16,21 @@ ZoneId = tuple[int, str]
 DEPTH_MIN_M = 0.0
 DEPTH_MAX_M = 25.0
 GRID_INTERVAL_M = 1.0
+UNGRIDDED_LOG_EVERY_MESSAGES = 1
+GRIDDED_LOG_EVERY_MESSAGES = 10
+GRIDDED_SURFACE_LOG_EVERY_MESSAGES = 30
+
+
+def time_it(name: str) -> Callable:
+    def decorator(func: Callable) -> Callable:
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            result = func(*args, **kwargs)
+            end_time = time.time()
+            print(f"{name} took {end_time - start_time:.2f} seconds")
+            return result
+        return wrapper
+    return decorator
 
 
 def boat_position_to_utm(message: nav_api_pb2.TargetData) -> tuple[float, float, ZoneId]:
@@ -48,6 +65,52 @@ def depth_to_color(depth_m: float, shallowest_m: float, deepest_m: float) -> tup
 
 def depth_colors(points: list[Point3D]) -> list[tuple[int, int, int]]:
     return [depth_to_color(abs(point[2]), DEPTH_MIN_M, DEPTH_MAX_M) for point in points]
+
+
+def subtract_points(a: Point3D, b: Point3D) -> Point3D:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def cross_product(a: Point3D, b: Point3D) -> Point3D:
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def normalize_vector(vector: Point3D) -> Point3D:
+    magnitude = math.sqrt(vector[0] ** 2 + vector[1] ** 2 + vector[2] ** 2)
+    if math.isclose(magnitude, 0.0):
+        return (0.0, 0.0, -1.0)
+    return (vector[0] / magnitude, vector[1] / magnitude, vector[2] / magnitude)
+
+
+def mesh_vertex_normals(
+    vertex_positions: list[Point3D],
+    triangle_indices: list[tuple[int, int, int]],
+) -> list[Point3D]:
+    normals = [(0.0, 0.0, 0.0) for _ in vertex_positions]
+    for index_a, index_b, index_c in triangle_indices:
+        point_a = vertex_positions[index_a]
+        point_b = vertex_positions[index_b]
+        point_c = vertex_positions[index_c]
+        edge_ab = subtract_points(point_b, point_a)
+        edge_ac = subtract_points(point_c, point_a)
+        face_normal = cross_product(edge_ab, edge_ac)
+
+        for vertex_index in (index_a, index_b, index_c):
+            normal_x, normal_y, normal_z = normals[vertex_index]
+            normals[vertex_index] = (
+                normal_x + face_normal[0],
+                normal_y + face_normal[1],
+                normal_z + face_normal[2],
+            )
+
+    return [
+        normalize_vector((-normal_x, -normal_y, -normal_z))
+        for normal_x, normal_y, normal_z in normals
+    ]
 
 
 @dataclass
@@ -96,17 +159,8 @@ def local_bottom_points(
 ) -> tuple[list[Point3D], bool]:
     boat_easting, boat_northing, zone_id = boat_position_to_utm(message)
     zone_changed = geo_reference.update((boat_easting, boat_northing), zone_id)
-    points, _ = bottom_points_in_world(message, geo_reference)
-    return points, zone_changed
-
-
-def bottom_points_in_world(
-    message: nav_api_pb2.TargetData,
-    geo_reference: BottomGeoReference,
-) -> tuple[list[Point3D], ZoneId]:
-    easting, northing, zone_id = boat_position_to_utm(message)
     heading_deg = message.heading.heading
-    local_easting, local_northing = geo_reference.to_local_xy((easting, northing))
+    local_easting, local_northing = geo_reference.to_local_xy((boat_easting, boat_northing))
 
     points: list[Point3D] = []
     for bottom_bin in message.bottom:
@@ -115,8 +169,8 @@ def bottom_points_in_world(
             bottom_bin.down_range,
             bottom_bin.depth,
             heading_deg,
-            easting,
-            northing,
+            boat_easting,
+            boat_northing,
         )
         if not all(math.isfinite(value) for value in values):
             continue
@@ -136,32 +190,43 @@ def bottom_points_in_world(
             )
         )
 
-    return points, zone_id
+    return points, zone_changed
 
 
 @dataclass
 class UnGriddedBottomViewer:
     entity_path: str = "world/bottom/ungridded"
     point_radius: float = 0.2
+    log_every_messages: int = UNGRIDDED_LOG_EVERY_MESSAGES
     accumulated_points: list[Point3D] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.log_every_messages <= 0:
+            raise ValueError("UnGriddedBottomViewer log_every_messages must be positive")
 
     def reset(self) -> None:
         self.accumulated_points.clear()
 
-    def log_points(self, points: list[Point3D]) -> None:
+    def should_log(self, current_message: int | None) -> bool:
+        return current_message is None or current_message % self.log_every_messages == 0
+
+    @time_it(name="UnGriddedBottomViewer.log_points")
+    def log_points(self, points: list[Point3D], current_message: int | None = None) -> None:
         if not points:
             return
 
-        self.accumulated_points.extend(points)
+        if not self.should_log(current_message):
+            return
+
         rr.log(
-            self.entity_path,
+            f"{self.entity_path}/ping{current_message}",
             rr.Points3D(
-                self.accumulated_points,
-                colors=depth_colors(self.accumulated_points),
+                points,
+                colors=depth_colors(points),
                 radii=self.point_radius,
             ),
         )
-        print(f"Logged {len(points)} bottom points ({len(self.accumulated_points)} total)")
+        print(f"Logged {len(points)} bottom points")
 
 
 @dataclass
@@ -183,14 +248,20 @@ class GriddedBottomViewer:
     interval_m: float
     entity_path: str = "world/bottom/gridded"
     point_radius: float = 0.3
+    log_every_messages: int = GRIDDED_LOG_EVERY_MESSAGES
     cells: dict[tuple[int, int], GriddedCell] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.interval_m <= 0.0:
             raise ValueError("GriddedBottomViewer interval must be positive")
+        if self.log_every_messages <= 0:
+            raise ValueError("GriddedBottomViewer log_every_messages must be positive")
 
     def reset(self) -> None:
         self.cells.clear()
+
+    def should_log(self, current_message: int | None) -> bool:
+        return current_message is None or current_message % self.log_every_messages == 0
 
     def add_points(self, points: list[Point3D]) -> None:
         for x_m, y_m, depth_m in points:
@@ -213,8 +284,11 @@ class GriddedBottomViewer:
             )
         return averaged_points
 
-    def log_points(self, points: list[Point3D]) -> None:
+    @time_it(name="GriddedBottomViewer.log_points")
+    def log_points(self, points: list[Point3D], current_message: int | None = None) -> None:
         self.add_points(points)
+        if not self.should_log(current_message):
+            return
 
         if not self.cells:
             return
@@ -235,8 +309,25 @@ class GriddedBottomViewer:
 @dataclass
 class GriddedBottomSurfaceViewer:
     entity_path: str = "world/bottom/gridded_surface"
+    log_every_messages: int = GRIDDED_SURFACE_LOG_EVERY_MESSAGES
 
-    def log_surface(self, cells: dict[tuple[int, int], GriddedCell], interval_m: float) -> None:
+    def __post_init__(self) -> None:
+        if self.log_every_messages <= 0:
+            raise ValueError("GriddedBottomSurfaceViewer log_every_messages must be positive")
+
+    def should_log(self, current_message: int | None) -> bool:
+        return current_message is None or current_message % self.log_every_messages == 0
+
+    @time_it(name="GriddedBottomSurfaceViewer.log_points")
+    def log_points(
+        self,
+        cells: dict[tuple[int, int], GriddedCell],
+        interval_m: float,
+        current_message: int | None = None,
+    ) -> None:
+        if not self.should_log(current_message):
+            return
+
         if not cells:
             return
 
@@ -274,16 +365,29 @@ class GriddedBottomSurfaceViewer:
         if not triangle_indices:
             return
 
+        vertex_normals = mesh_vertex_normals(vertex_positions, triangle_indices)
+
         rr.log(
             self.entity_path,
             rr.Mesh3D(
                 vertex_positions=vertex_positions,
                 triangle_indices=triangle_indices,
+                vertex_normals=vertex_normals,
                 vertex_colors=depth_colors(vertex_positions),
             ),
         )
         print(f"Logged gridded surface with {len(triangle_indices)} triangles")
 
+
+def get_message_counter() -> Callable[[], int]:
+    message_count = 0
+
+    def increment():
+        nonlocal message_count
+        message_count += 1
+        return message_count
+
+    return increment
 
 def main() -> None:
     rr.init("grid-example")
@@ -299,11 +403,14 @@ def main() -> None:
     ungridded_viewer = UnGriddedBottomViewer()
     gridded_viewer = GriddedBottomViewer(interval_m=GRID_INTERVAL_M)
     gridded_surface_viewer = GriddedBottomSurfaceViewer()
+    message_counter = get_message_counter()
 
     def on_targets(message: nav_api_pb2.TargetData) -> None:
         if not has_valid_navigation(message):
             print("Skipping TargetData with invalid navigation values")
             return
+
+        msg_num = message_counter()
 
         points, zone_changed = local_bottom_points(message, geo_reference)
 
@@ -314,9 +421,17 @@ def main() -> None:
         if not points:
             return
 
-        ungridded_viewer.log_points(points)
-        gridded_viewer.log_points(points)
-        gridded_surface_viewer.log_surface(gridded_viewer.cells, gridded_viewer.interval_m)
+        msg_num = None if zone_changed else msg_num
+        ungridded_viewer.log_points(points, current_message=msg_num)
+        gridded_viewer.log_points(
+            points,
+            current_message=msg_num,
+        )
+        gridded_surface_viewer.log_points(
+            gridded_viewer.cells,
+            gridded_viewer.interval_m,
+            current_message=msg_num,
+        )
 
     sub.on("TargetData", on_targets)
 
