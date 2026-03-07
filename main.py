@@ -7,6 +7,7 @@ from typing import Callable
 
 import rerun as rr
 import utm
+from scipy.spatial import Delaunay, QhullError
 
 from farsounder import config, subscriber
 from farsounder.proto import nav_api_pb2
@@ -19,6 +20,8 @@ GRID_INTERVAL_M = 1.0
 UNGRIDDED_LOG_EVERY_MESSAGES = 1
 GRIDDED_LOG_EVERY_MESSAGES = 10
 GRIDDED_SURFACE_LOG_EVERY_MESSAGES = 30
+LIVE_TUNING_FACTOR = 5.0
+LIVE_MIN_EDGE = 4.0
 
 
 def time_it(name: str) -> Callable:
@@ -113,6 +116,12 @@ def mesh_vertex_normals(
     ]
 
 
+@dataclass(frozen=True)
+class LiveBottomVertex:
+    position: Point3D
+    down_range_m: float
+
+
 @dataclass
 class BottomGeoReference:
     current_zone: ZoneId | None = None
@@ -153,16 +162,16 @@ def has_valid_navigation(message: nav_api_pb2.TargetData) -> bool:
     return all(math.isfinite(value) for value in nav_values)
 
 
-def local_bottom_points(
+def local_bottom_vertices(
     message: nav_api_pb2.TargetData,
     geo_reference: BottomGeoReference,
-) -> tuple[list[Point3D], bool]:
+) -> tuple[list[LiveBottomVertex], bool]:
     boat_easting, boat_northing, zone_id = boat_position_to_utm(message)
     zone_changed = geo_reference.update((boat_easting, boat_northing), zone_id)
     heading_deg = message.heading.heading
     local_easting, local_northing = geo_reference.to_local_xy((boat_easting, boat_northing))
 
-    points: list[Point3D] = []
+    vertices: list[LiveBottomVertex] = []
     for bottom_bin in message.bottom:
         values = (
             bottom_bin.cross_range,
@@ -182,15 +191,76 @@ def local_bottom_points(
             right_m=right_m,
             heading_deg=heading_deg,
         )
-        points.append(
-            (
-                local_easting + east_offset,
-                local_northing + north_offset,
-                bottom_bin.depth,
+        vertices.append(
+            LiveBottomVertex(
+                position=(
+                    local_easting + east_offset,
+                    local_northing + north_offset,
+                    bottom_bin.depth,
+                ),
+                down_range_m=bottom_bin.down_range,
             )
         )
 
-    return points, zone_changed
+    return vertices, zone_changed
+
+
+def get_horizontal_angle_spacing_rad(message: nav_api_pb2.TargetData) -> float | None:
+    hor_angles = [math.radians(angle) for angle in message.grid_description.hor_angles if math.isfinite(angle)]
+    return abs(hor_angles[1] - hor_angles[0])
+
+
+def delaunay_triangle_indices(
+    vertices: list[LiveBottomVertex],
+    hor_angle_spacing_rad: float | None,
+    edge_expansion_factor: float,
+    min_edge: float,
+) -> list[tuple[int, int, int]]:
+    if len(vertices) < 3:
+        return []
+
+    projected_points = [(vertex.position[0], vertex.position[1]) for vertex in vertices]
+    try:
+        triangulation = Delaunay(projected_points)
+    except QhullError:
+        return []
+
+    triangle_indices: list[tuple[int, int, int]] = []
+    max_edge_scale = None
+    if hor_angle_spacing_rad is not None:
+        max_edge_scale = math.tan(hor_angle_spacing_rad) * edge_expansion_factor
+
+    for simplex in triangulation.simplices:
+        index_a, index_b, index_c = (int(simplex[0]), int(simplex[1]), int(simplex[2]))
+
+        if max_edge_scale is None:
+            continue
+    
+        max_down_range = max(
+            vertices[index_a].down_range_m,
+            vertices[index_b].down_range_m,
+            vertices[index_c].down_range_m,
+        )
+        max_edge_m = max(min_edge, max_down_range * max_edge_scale)
+
+        if max_edge_m <= 0.0:
+            continue
+
+        point_a = vertices[index_a].position
+        point_b = vertices[index_b].position
+        point_c = vertices[index_c].position
+        edge_lengths = (
+            math.dist(point_a, point_b),
+            math.dist(point_b, point_c),
+            math.dist(point_c, point_a),
+        )
+
+        if any(edge_length > max_edge_m for edge_length in edge_lengths):
+            continue
+
+        triangle_indices.append((index_a, index_b, index_c))
+
+    return triangle_indices
 
 
 @dataclass
@@ -379,6 +449,64 @@ class GriddedBottomSurfaceViewer:
         print(f"Logged gridded surface with {len(triangle_indices)} triangles")
 
 
+@dataclass
+class LiveBottomSurfaceViewer:
+    entity_path: str = "world/bottom/live_surface"
+    log_every_messages: int = UNGRIDDED_LOG_EVERY_MESSAGES
+    tuning_factor: float = LIVE_TUNING_FACTOR
+    min_edge: float = LIVE_MIN_EDGE
+
+    def __post_init__(self) -> None:
+        if self.log_every_messages <= 0:
+            raise ValueError("LiveBottomSurfaceViewer log_every_messages must be positive")
+        if self.tuning_factor <= 0.0:
+            raise ValueError("LiveBottomSurfaceViewer tuning_factor must be positive")
+
+    def should_log(self, current_message: int | None) -> bool:
+        return current_message is None or current_message % self.log_every_messages == 0
+
+    def clear(self) -> None:
+        rr.log(self.entity_path, rr.Clear(recursive=False))
+
+    @time_it(name="LiveBottomSurfaceViewer.log_points")
+    def log_points(
+        self,
+        vertices: list[LiveBottomVertex],
+        message: nav_api_pb2.TargetData,
+        current_message: int | None = None,
+    ) -> None:
+        if not self.should_log(current_message):
+            return
+
+        if len(vertices) < 3:
+            self.clear()
+            return
+
+        triangle_indices = delaunay_triangle_indices(
+            vertices,
+            get_horizontal_angle_spacing_rad(message),
+            self.tuning_factor,
+            self.min_edge, # close range our range based parameterization is too small
+        )
+        if not triangle_indices:
+            self.clear()
+            return
+
+        vertex_positions = [vertex.position for vertex in vertices]
+        vertex_normals = mesh_vertex_normals(vertex_positions, triangle_indices)
+
+        rr.log(
+            self.entity_path,
+            rr.Mesh3D(
+                vertex_positions=vertex_positions,
+                triangle_indices=triangle_indices,
+                vertex_normals=vertex_normals,
+                vertex_colors=depth_colors(vertex_positions),
+            ),
+        )
+        print(f"Logged live bottom surface with {len(triangle_indices)} triangles")
+
+
 def get_message_counter() -> Callable[[], int]:
     message_count = 0
 
@@ -403,6 +531,7 @@ def main() -> None:
     ungridded_viewer = UnGriddedBottomViewer()
     gridded_viewer = GriddedBottomViewer(interval_m=GRID_INTERVAL_M)
     gridded_surface_viewer = GriddedBottomSurfaceViewer()
+    live_surface_viewer = LiveBottomSurfaceViewer()
     message_counter = get_message_counter()
 
     def on_targets(message: nav_api_pb2.TargetData) -> None:
@@ -412,15 +541,17 @@ def main() -> None:
 
         msg_num = message_counter()
 
-        points, zone_changed = local_bottom_points(message, geo_reference)
+        vertices, zone_changed = local_bottom_vertices(message, geo_reference)
 
         if zone_changed:
             ungridded_viewer.reset()
             gridded_viewer.reset()
 
-        if not points:
+        if not vertices:
+            live_surface_viewer.clear()
             return
 
+        points = [vertex.position for vertex in vertices]
         msg_num = None if zone_changed else msg_num
         ungridded_viewer.log_points(points, current_message=msg_num)
         gridded_viewer.log_points(
@@ -430,6 +561,11 @@ def main() -> None:
         gridded_surface_viewer.log_points(
             gridded_viewer.cells,
             gridded_viewer.interval_m,
+            current_message=msg_num,
+        )
+        live_surface_viewer.log_points(
+            vertices,
+            message,
             current_message=msg_num,
         )
 
