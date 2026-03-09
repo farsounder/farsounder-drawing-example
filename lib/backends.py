@@ -4,6 +4,11 @@ from lib.models import MeshRender, PointsRender, ViewerBackend
 
 
 def build_rerun_viewer_backend() -> ViewerBackend:
+
+    def init() -> None:
+        rr.init("Argos SDK Example", spawn=True)
+        rr.spawn()
+
     def log_points(render: PointsRender) -> None:
         rr.log(
             render.entity_path,
@@ -29,6 +34,7 @@ def build_rerun_viewer_backend() -> ViewerBackend:
         rr.log(entity_path, rr.Clear(recursive=False))
 
     return ViewerBackend(
+        init=init,
         log_points=log_points,
         log_mesh=log_mesh,
         clear=clear,

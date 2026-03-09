@@ -44,12 +44,11 @@ def main() -> None:
     logging.basicConfig(level=args.log_level)
 
     if args.ui != "rerun":
-        raise ValueError(f"Unsupported UI: {args.ui}")
+        raise ValueError(f"Unsupported UI: {args.ui}, only rerun is supported currently")
 
     logging.info("Initializing ReRun viewer")
-    rr.init("grid-example")
-    rr.spawn()
     viewer_backend = build_rerun_viewer_backend()
+    viewer_backend.init()
 
     cfg = config.build_config(
         host="127.0.0.1",

@@ -55,6 +55,7 @@ ClearLogger = Callable[[str], None]
 
 @dataclass(frozen=True)
 class ViewerBackend:
+    init: Callable[[], None]
     log_points: PointLogger
     log_mesh: MeshLogger
     clear: ClearLogger
