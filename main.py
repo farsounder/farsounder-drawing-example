@@ -18,6 +18,8 @@ from farsounder.proto import nav_api_pb2
 
 Point3D = tuple[float, float, float]
 ZoneId = tuple[int, str]
+ColorRGB = tuple[int, int, int]
+TriangleIndices = tuple[int, int, int]
 
 # This is the depth range, just for the color mapping to look
 # nice in the viewer.
@@ -287,8 +289,38 @@ def gridded_cell_vertices(
     return vertices
 
 
+@dataclass(frozen=True)
+class PointsRender:
+    entity_path: str
+    points: list[Point3D]
+    colors: list[ColorRGB]
+    radii: float
+
+
+@dataclass(frozen=True)
+class MeshRender:
+    entity_path: str
+    vertex_positions: list[Point3D]
+    triangle_indices: list[TriangleIndices]
+    vertex_normals: list[Point3D]
+    vertex_colors: list[ColorRGB]
+
+
+PointLogger = Callable[[PointsRender], None]
+MeshLogger = Callable[[MeshRender], None]
+ClearLogger = Callable[[str], None]
+
+
+@dataclass(frozen=True)
+class ViewerBackend:
+    log_points: PointLogger
+    log_mesh: MeshLogger
+    clear: ClearLogger
+
+
 @dataclass
 class UnGriddedBottomViewer:
+    point_logger: PointLogger
     entity_path: str = "world/bottom/ungridded"
     point_radius: float = 0.2
     log_every_messages: int = UNGRIDDED_LOG_EVERY_MESSAGES
@@ -311,13 +343,13 @@ class UnGriddedBottomViewer:
         if not self.should_log(current_message):
             return
 
-        rr.log(
-            f"{self.entity_path}/ping{current_message}",
-            rr.Points3D(
-                points,
+        self.point_logger(
+            PointsRender(
+                entity_path=f"{self.entity_path}/ping{current_message}",
+                points=points,
                 colors=depth_colors(points),
                 radii=self.point_radius,
-            ),
+            )
         )
         logging.info(f"Logged {len(points)} raw bottom points")
 
@@ -339,6 +371,7 @@ class GriddedCell:
 @dataclass
 class GriddedBottomViewer:
     interval_m: float
+    point_logger: PointLogger
     entity_path: str = "world/bottom/gridded"
     point_radius: float = 0.3
     log_every_messages: int = GRIDDED_LOG_EVERY_MESSAGES
@@ -388,19 +421,21 @@ class GriddedBottomViewer:
 
         averaged_points = self.averaged_points()
 
-        rr.log(
-            self.entity_path,
-            rr.Points3D(
-                averaged_points,
+        self.point_logger(
+            PointsRender(
+                entity_path=self.entity_path,
+                points=averaged_points,
                 colors=depth_colors(averaged_points),
                 radii=self.point_radius,
-            ),
+            )
         )
         logging.info(f"Logged {len(averaged_points)} gridded bottom cells")
 
 
 @dataclass
 class GriddedBottomSurfaceViewer:
+    mesh_logger: MeshLogger
+    clear_logger: ClearLogger
     entity_path: str = "world/bottom/gridded_surface"
     log_every_messages: int = GRIDDED_SURFACE_LOG_EVERY_MESSAGES
     min_edge: float = TIN_MIN_EDGE
@@ -413,7 +448,7 @@ class GriddedBottomSurfaceViewer:
         return current_message is None or current_message % self.log_every_messages == 0
 
     def reset(self) -> None:
-        rr.log(self.entity_path, rr.Clear(recursive=False))
+        self.clear_logger(self.entity_path)
 
     @time_it(name="GriddedBottomSurfaceViewer.log_points")
     def log_points(
@@ -450,20 +485,22 @@ class GriddedBottomSurfaceViewer:
         vertex_positions = [vertex.position for vertex in vertices]
         vertex_normals = mesh_vertex_normals(vertex_positions, triangle_indices)
 
-        rr.log(
-            self.entity_path,
-            rr.Mesh3D(
+        self.mesh_logger(
+            MeshRender(
+                entity_path=self.entity_path,
                 vertex_positions=vertex_positions,
                 triangle_indices=triangle_indices,
                 vertex_normals=vertex_normals,
                 vertex_colors=depth_colors(vertex_positions),
-            ),
+            )
         )
         logging.info(f"Logged gridded bottom surface with {len(triangle_indices)} triangles")
 
 
 @dataclass
 class LiveBottomSurfaceViewer:
+    mesh_logger: MeshLogger
+    clear_logger: ClearLogger
     entity_path: str = "world/bottom/live_surface"
     log_every_messages: int = UNGRIDDED_LOG_EVERY_MESSAGES
     tuning_factor: float = TIN_TUNING_FACTOR
@@ -479,7 +516,7 @@ class LiveBottomSurfaceViewer:
         return current_message is None or current_message % self.log_every_messages == 0
 
     def reset(self) -> None:
-        rr.log(self.entity_path, rr.Clear(recursive=False))
+        self.clear_logger(self.entity_path)
 
     @time_it(name="LiveBottomSurfaceViewer.log_points")
     def log_points(
@@ -522,14 +559,14 @@ class LiveBottomSurfaceViewer:
         vertex_positions = [vertex.position for vertex in vertices]
         vertex_normals = mesh_vertex_normals(vertex_positions, triangle_indices)
 
-        rr.log(
-            self.entity_path,
-            rr.Mesh3D(
+        self.mesh_logger(
+            MeshRender(
+                entity_path=self.entity_path,
                 vertex_positions=vertex_positions,
                 triangle_indices=triangle_indices,
                 vertex_normals=vertex_normals,
                 vertex_colors=depth_colors(vertex_positions),
-            ),
+            )
         )
         logging.info(f"Logged live bottom surface with {len(triangle_indices)} triangles")
 
@@ -550,6 +587,38 @@ def handle_arguments() -> argparse.Namespace:
     parser.add_argument("--ui", type=str, default="rerun", choices=["rerun"], help="UI to use")
     return parser.parse_args()
 
+
+def build_rerun_viewer_backend() -> ViewerBackend:
+    def log_points(render: PointsRender) -> None:
+        rr.log(
+            render.entity_path,
+            rr.Points3D(
+                render.points,
+                colors=render.colors,
+                radii=render.radii,
+            ),
+        )
+
+    def log_mesh(render: MeshRender) -> None:
+        rr.log(
+            render.entity_path,
+            rr.Mesh3D(
+                vertex_positions=render.vertex_positions,
+                triangle_indices=render.triangle_indices,
+                vertex_normals=render.vertex_normals,
+                vertex_colors=render.vertex_colors,
+            ),
+        )
+
+    def clear(entity_path: str) -> None:
+        rr.log(entity_path, rr.Clear(recursive=False))
+
+    return ViewerBackend(
+        log_points=log_points,
+        log_mesh=log_mesh,
+        clear=clear,
+    )
+
 def main() -> None:
     args = handle_arguments()
     logging.basicConfig(level=args.log_level)
@@ -559,6 +628,7 @@ def main() -> None:
 
     rr.init("grid-example")
     rr.spawn()
+    viewer_backend = build_rerun_viewer_backend()
 
     cfg = config.build_config(
         host="127.0.0.1",
@@ -568,10 +638,19 @@ def main() -> None:
 
     # Lots of viewers / streams for rerun
     geo_reference = BottomGeoReference()
-    ungridded_viewer = UnGriddedBottomViewer()
-    gridded_viewer = GriddedBottomViewer(interval_m=GRID_INTERVAL_M)
-    gridded_surface_viewer = GriddedBottomSurfaceViewer()
-    live_surface_viewer = LiveBottomSurfaceViewer()
+    ungridded_viewer = UnGriddedBottomViewer(point_logger=viewer_backend.log_points)
+    gridded_viewer = GriddedBottomViewer(
+        interval_m=GRID_INTERVAL_M,
+        point_logger=viewer_backend.log_points,
+    )
+    gridded_surface_viewer = GriddedBottomSurfaceViewer(
+        mesh_logger=viewer_backend.log_mesh,
+        clear_logger=viewer_backend.clear,
+    )
+    live_surface_viewer = LiveBottomSurfaceViewer(
+        mesh_logger=viewer_backend.log_mesh,
+        clear_logger=viewer_backend.clear,
+    )
     message_counter = get_message_counter()
 
     def on_targets(message: nav_api_pb2.TargetData) -> None:
