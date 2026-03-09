@@ -21,3 +21,6 @@ uv sync
 uv run main.py # optional --log-level DEBUG|INFO|WARNING
 ```
 It should open re-run, and if the SonaSoftSDK demo is running, start displaying data!
+
+Here's an example with gridded surface, grids and live surface toggled visible in Rerun:
+<img width="1896" height="1047" alt="image" src="https://github.com/user-attachments/assets/34ba3dbb-cefc-4b0c-916d-779a2d64d4e3" />
