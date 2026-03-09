@@ -1,4 +1,5 @@
 # Simple script to visualize bottom data in ReRun
+import logging
 import math
 import time
 from dataclasses import dataclass, field
@@ -6,7 +7,8 @@ from typing import Callable
 
 import rerun as rr
 import utm
-from matplotlib import colormaps
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from scipy.spatial import Delaunay, QhullError
 
 from farsounder import config, subscriber
@@ -19,7 +21,7 @@ ZoneId = tuple[int, str]
 # nice in the viewer.
 DEPTH_MIN_M = 0.0
 DEPTH_MAX_M = 25.0
-COLOR_MAP = colormaps["viridis"]
+COLOR_MAP = "viridis"
 
 # Smaller intervals mean more detail, bumpier, slower processing
 # Larger intervals mean less detail, smoother, faster processing
@@ -48,7 +50,7 @@ def time_it(name: str) -> Callable:
             start_time = time.time()
             result = func(*args, **kwargs)
             end_time = time.time()
-            print(f"{name} took {end_time - start_time:.2f} seconds")
+            logging.info(f"{name} took {end_time - start_time:.2f} seconds")
             return result
         return wrapper
     return decorator
@@ -74,18 +76,17 @@ def rotate_boat_offset_to_world(
 
 
 def depth_to_color(depth_m: float, shallowest_m: float, deepest_m: float) -> tuple[int, int, int]:
-    # remove divide by zero chance with wonky settings
-    if math.isclose(shallowest_m, deepest_m):
-        print(f"Shallowest and deepest are the same: {shallowest_m} {deepest_m}")
-        red, green, blue, _ = COLOR_MAP(0.5)
-        return (round(red * 255), round(green * 255), round(blue * 255))
 
-    t = (depth_m - shallowest_m) / (deepest_m - shallowest_m)
-    # Clamp the value to 0-1 and get the color from the color map,
-    # and flip
-    clamped_t = 1.0 - min(max(t, 0.0), 1.0)
-    red, green, blue, _ = COLOR_MAP(clamped_t)
-    return (round(red * 255), round(green * 255), round(blue * 255))
+    if not (cmap := plt.get_cmap(COLOR_MAP)):
+        raise ValueError(f"Color map {COLOR_MAP} not found")
+
+    if math.isclose(shallowest_m, deepest_m):
+        logging.warning(f"Shallowest and deepest are the same: {shallowest_m} {deepest_m}")
+        return (255, 255, 255)
+
+    t = 1.0 - mcolors.Normalize(vmin=shallowest_m, vmax=deepest_m)(depth_m)
+    r, g, b, _ = cmap(t)
+    return (round(r * 255), round(g * 255), round(b * 255))
 
 
 def depth_colors(points: list[Point3D]) -> list[tuple[int, int, int]]:
@@ -160,7 +161,7 @@ class BottomGeoReference:
             return False
 
         if self.current_zone != zone_id:
-            print(f"UTM zone changed from {self.current_zone} to {zone_id}; resetting bottom view")
+            logging.info(f"UTM zone changed from {self.current_zone} to {zone_id}; resetting bottom view")
             self.current_zone = zone_id
             self.origin_xy = boat_xy
             return True
@@ -312,7 +313,7 @@ class UnGriddedBottomViewer:
                 radii=self.point_radius,
             ),
         )
-        print(f"Logged {len(points)} bottom points")
+        logging.info(f"Logged {len(points)} bottom points")
 
 
 @dataclass
@@ -389,7 +390,7 @@ class GriddedBottomViewer:
                 radii=self.point_radius,
             ),
         )
-        print(f"Logged {len(averaged_points)} gridded bottom cells")
+        logging.info(f"Logged {len(averaged_points)} gridded bottom cells")
 
 
 @dataclass
@@ -452,7 +453,7 @@ class GriddedBottomSurfaceViewer:
                 vertex_colors=depth_colors(vertex_positions),
             ),
         )
-        print(f"Logged gridded surface with {len(triangle_indices)} triangles")
+        logging.info(f"Logged gridded surface with {len(triangle_indices)} triangles")
 
 
 @dataclass
@@ -524,7 +525,7 @@ class LiveBottomSurfaceViewer:
                 vertex_colors=depth_colors(vertex_positions),
             ),
         )
-        print(f"Logged live bottom surface with {len(triangle_indices)} triangles")
+        logging.info(f"Logged live bottom surface with {len(triangle_indices)} triangles")
 
 
 def get_message_counter() -> Callable[[], int]:
@@ -557,7 +558,7 @@ def main() -> None:
 
     def on_targets(message: nav_api_pb2.TargetData) -> None:
         if not has_valid_navigation(message):
-            print("Skipping TargetData with invalid navigation values")
+            logging.warning("Skipping TargetData with invalid navigation values")
             return
 
         msg_num = message_counter()
@@ -595,11 +596,11 @@ def main() -> None:
 
     try:
         sub.start()
-        print("Running... Press Ctrl+C to stop")
+        logging.info("Running... Press Ctrl+C to stop")
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:
-        print("Stopping...")
+        logging.info("Stopping...")
     finally:
         sub.stop()
 
