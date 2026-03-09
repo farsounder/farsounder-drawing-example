@@ -1,4 +1,5 @@
 # Simple script to visualize bottom data in ReRun
+import argparse
 import logging
 import math
 import time
@@ -538,7 +539,19 @@ def get_message_counter() -> Callable[[], int]:
 
     return increment
 
+def handle_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Visualize Argos data using the Python SDK")
+    parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Log level")
+    parser.add_argument("--ui", type=str, default="rerun", choices=["rerun"], help="UI to use")
+    return parser.parse_args()
+
 def main() -> None:
+    args = handle_arguments()
+    logging.basicConfig(level=args.log_level)
+
+    if args.ui != "rerun":
+        raise ValueError(f"Unsupported UI: {args.ui}")
+
     rr.init("grid-example")
     rr.spawn()
 
