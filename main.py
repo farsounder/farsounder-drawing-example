@@ -1,5 +1,4 @@
 # Simple script to visualize bottom data in ReRun
-import colorsys
 import math
 import time
 from dataclasses import dataclass, field
@@ -7,6 +6,7 @@ from typing import Callable
 
 import rerun as rr
 import utm
+from matplotlib import colormaps
 from scipy.spatial import Delaunay, QhullError
 
 from farsounder import config, subscriber
@@ -19,6 +19,7 @@ ZoneId = tuple[int, str]
 # nice in the viewer.
 DEPTH_MIN_M = 0.0
 DEPTH_MAX_M = 25.0
+COLOR_MAP = colormaps["viridis"]
 
 # Smaller intervals mean more detail, bumpier, slower processing
 # Larger intervals mean less detail, smoother, faster processing
@@ -73,14 +74,18 @@ def rotate_boat_offset_to_world(
 
 
 def depth_to_color(depth_m: float, shallowest_m: float, deepest_m: float) -> tuple[int, int, int]:
+    # remove divide by zero chance with wonky settings
     if math.isclose(shallowest_m, deepest_m):
-        return (80, 180, 255)
+        print(f"Shallowest and deepest are the same: {shallowest_m} {deepest_m}")
+        red, green, blue, _ = COLOR_MAP(0.5)
+        return (round(red * 255), round(green * 255), round(blue * 255))
 
-    # Shallower points trend warm, deeper points trend cool.
     t = (depth_m - shallowest_m) / (deepest_m - shallowest_m)
-    hue = (40.0 + (220.0 - 40.0) * t) / 360.0
-    red, green, blue = colorsys.hsv_to_rgb(hue, 0.85, 1.0)
-    return (int(red * 255), int(green * 255), int(blue * 255))
+    # Clamp the value to 0-1 and get the color from the color map,
+    # and flip
+    clamped_t = 1.0 - min(max(t, 0.0), 1.0)
+    red, green, blue, _ = COLOR_MAP(clamped_t)
+    return (round(red * 255), round(green * 255), round(blue * 255))
 
 
 def depth_colors(points: list[Point3D]) -> list[tuple[int, int, int]]:
