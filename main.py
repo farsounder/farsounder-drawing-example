@@ -300,6 +300,9 @@ class UnGriddedBottomViewer:
     def should_log(self, current_message: int | None) -> bool:
         return current_message is None or current_message % self.log_every_messages == 0
 
+    def reset(self) -> None:
+        pass
+
     @time_it(name="UnGriddedBottomViewer.log_points")
     def log_points(self, points: list[Point3D], current_message: int | None = None) -> None:
         if not points:
@@ -409,7 +412,7 @@ class GriddedBottomSurfaceViewer:
     def should_log(self, current_message: int | None) -> bool:
         return current_message is None or current_message % self.log_every_messages == 0
 
-    def clear(self) -> None:
+    def reset(self) -> None:
         rr.log(self.entity_path, rr.Clear(recursive=False))
 
     @time_it(name="GriddedBottomSurfaceViewer.log_points")
@@ -423,7 +426,7 @@ class GriddedBottomSurfaceViewer:
             return
 
         if not cells:
-            self.clear()
+            self.reset()
             return
 
         vertices = gridded_cell_vertices(cells, interval_m)
@@ -441,7 +444,7 @@ class GriddedBottomSurfaceViewer:
             cull_triangle_func=skip_triangle,
         )
         if not triangle_indices:
-            self.clear()
+            self.reset()
             return
 
         vertex_positions = [vertex.position for vertex in vertices]
@@ -475,7 +478,7 @@ class LiveBottomSurfaceViewer:
     def should_log(self, current_message: int | None) -> bool:
         return current_message is None or current_message % self.log_every_messages == 0
 
-    def clear(self) -> None:
+    def reset(self) -> None:
         rr.log(self.entity_path, rr.Clear(recursive=False))
 
     @time_it(name="LiveBottomSurfaceViewer.log_points")
@@ -489,11 +492,11 @@ class LiveBottomSurfaceViewer:
             return
 
         if len(vertices) < 3:
-            self.clear()
+            self.reset()
             return
 
         if not (hor_angle_spacing_rad := get_horizontal_angle_spacing_rad(message)):
-            self.clear()
+            self.reset()
             return
         
 
@@ -513,7 +516,7 @@ class LiveBottomSurfaceViewer:
             cull_triangle_func=skip_triangle,
         )
         if not triangle_indices:
-            self.clear()
+            self.reset()
             return
 
         vertex_positions = [vertex.position for vertex in vertices]
@@ -585,7 +588,7 @@ def main() -> None:
             gridded_viewer.reset()
 
         if not live_vertices:
-            live_surface_viewer.clear()
+            live_surface_viewer.reset()
             return
 
         points = [vertex.position for vertex in live_vertices]
