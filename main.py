@@ -1,4 +1,5 @@
 # Simple script to visualize bottom data in ReRun
+from functools import lru_cache
 import argparse
 import logging
 import math
@@ -44,6 +45,12 @@ GRIDDED_SURFACE_LOG_EVERY_MESSAGES = 30
 TIN_TUNING_FACTOR = 5.0
 TIN_MIN_EDGE = 4.0
 
+@lru_cache(maxsize=1)
+def _get_cmap(color_map: str) -> mcolors.Colormap:
+    if not (cmap := plt.get_cmap(color_map)):
+        raise ValueError(f"Color map {color_map} not found")
+    return cmap
+
 
 def time_it(name: str) -> Callable:
     def decorator(func: Callable) -> Callable:
@@ -78,8 +85,7 @@ def rotate_boat_offset_to_world(
 
 def depth_to_color(depth_m: float, shallowest_m: float, deepest_m: float) -> tuple[int, int, int]:
 
-    if not (cmap := plt.get_cmap(COLOR_MAP)):
-        raise ValueError(f"Color map {COLOR_MAP} not found")
+    cmap = _get_cmap(COLOR_MAP)
 
     if math.isclose(shallowest_m, deepest_m):
         logging.warning(f"Shallowest and deepest are the same: {shallowest_m} {deepest_m}")
@@ -286,14 +292,10 @@ class UnGriddedBottomViewer:
     entity_path: str = "world/bottom/ungridded"
     point_radius: float = 0.2
     log_every_messages: int = UNGRIDDED_LOG_EVERY_MESSAGES
-    accumulated_points: list[Point3D] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.log_every_messages <= 0:
             raise ValueError("UnGriddedBottomViewer log_every_messages must be positive")
-
-    def reset(self) -> None:
-        self.accumulated_points.clear()
 
     def should_log(self, current_message: int | None) -> bool:
         return current_message is None or current_message % self.log_every_messages == 0
@@ -314,7 +316,7 @@ class UnGriddedBottomViewer:
                 radii=self.point_radius,
             ),
         )
-        logging.info(f"Logged {len(points)} bottom points")
+        logging.info(f"Logged {len(points)} raw bottom points")
 
 
 @dataclass
@@ -454,7 +456,7 @@ class GriddedBottomSurfaceViewer:
                 vertex_colors=depth_colors(vertex_positions),
             ),
         )
-        logging.info(f"Logged gridded surface with {len(triangle_indices)} triangles")
+        logging.info(f"Logged gridded bottom surface with {len(triangle_indices)} triangles")
 
 
 @dataclass
