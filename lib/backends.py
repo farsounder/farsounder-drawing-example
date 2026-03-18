@@ -7,8 +7,8 @@ from lib.models import MeshRender, PointsRender, ViewerBackend
 
 BackendName: TypeAlias = Literal["rerun"]
 
-def _build_rerun_viewer_backend() -> ViewerBackend:
 
+def _build_rerun_viewer_backend() -> ViewerBackend:
     def init() -> None:
         rr.init("Argos SDK Example", spawn=True)
         rr.spawn()
@@ -44,9 +44,11 @@ def _build_rerun_viewer_backend() -> ViewerBackend:
         clear=clear,
     )
 
+
 BACKENDS: dict[BackendName, Callable[[], ViewerBackend]] = {
     "rerun": _build_rerun_viewer_backend,
 }
+
 
 def get_viewer_backend(ui: BackendName) -> ViewerBackend:
     return BACKENDS[ui]()

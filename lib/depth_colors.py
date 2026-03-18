@@ -20,7 +20,9 @@ def depth_to_color(depth_m: float, shallowest_m: float, deepest_m: float) -> Col
     cmap = _get_cmap(COLOR_MAP)
 
     if math.isclose(shallowest_m, deepest_m):
-        logging.warning(f"Shallowest and deepest are the same: {shallowest_m} {deepest_m}")
+        logging.warning(
+            f"Shallowest and deepest are the same: {shallowest_m} {deepest_m}"
+        )
         return (255, 255, 255)
 
     t = 1.0 - mcolors.Normalize(vmin=shallowest_m, vmax=deepest_m)(depth_m)

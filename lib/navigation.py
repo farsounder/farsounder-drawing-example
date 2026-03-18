@@ -22,7 +22,9 @@ class BottomGeoReference:
             return False
 
         if self.current_zone != zone_id:
-            logging.info(f"UTM zone changed from {self.current_zone} to {zone_id}; resetting bottom view")
+            logging.info(
+                f"UTM zone changed from {self.current_zone} to {zone_id}; resetting bottom view"
+            )
             self.current_zone = zone_id
             self.origin_xy = boat_xy
             return True
@@ -41,7 +43,9 @@ class BottomGeoReference:
         return world_easting - origin_easting, world_northing - origin_northing
 
 
-def boat_position_to_utm(message: nav_api_pb2.TargetData) -> tuple[float, float, ZoneId]:
+def boat_position_to_utm(
+    message: nav_api_pb2.TargetData,
+) -> tuple[float, float, ZoneId]:
     easting, northing, zone_number, zone_letter = utm.from_latlon(
         message.position.lat,
         message.position.lon,
@@ -77,7 +81,9 @@ def local_bottom_vertices(
     boat_easting, boat_northing, zone_id = boat_position_to_utm(message)
     zone_changed = geo_reference.update((boat_easting, boat_northing), zone_id)
     heading_deg = message.heading.heading
-    local_easting, local_northing = geo_reference.to_local_xy((boat_easting, boat_northing))
+    local_easting, local_northing = geo_reference.to_local_xy(
+        (boat_easting, boat_northing)
+    )
 
     vertices: list[LiveVertex] = []
     for bottom_bin in message.bottom:
@@ -114,5 +120,9 @@ def local_bottom_vertices(
 
 
 def get_horizontal_angle_spacing_rad(message: nav_api_pb2.TargetData) -> float | None:
-    hor_angles = [math.radians(angle) for angle in message.grid_description.hor_angles if math.isfinite(angle)]
+    hor_angles = [
+        math.radians(angle)
+        for angle in message.grid_description.hor_angles
+        if math.isfinite(angle)
+    ]
     return abs(hor_angles[1] - hor_angles[0])

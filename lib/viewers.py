@@ -1,8 +1,6 @@
 import logging
 import math
-import time
 from dataclasses import dataclass, field
-from typing import Callable
 
 from farsounder.proto import nav_api_pb2
 
@@ -14,7 +12,11 @@ from lib.config import (
     UNGRIDDED_LOG_EVERY_MESSAGES,
 )
 from lib.depth_colors import depth_colors
-from lib.geometry import delaunay_triangle_indices, gridded_cell_vertices, mesh_vertex_normals
+from lib.geometry import (
+    delaunay_triangle_indices,
+    gridded_cell_vertices,
+    mesh_vertex_normals,
+)
 from lib.models import (
     ClearLogger,
     GriddedCell,
@@ -39,7 +41,9 @@ class UnGriddedBottomViewer:
 
     def __post_init__(self) -> None:
         if self.log_every_messages <= 0:
-            raise ValueError("UnGriddedBottomViewer log_every_messages must be positive")
+            raise ValueError(
+                "UnGriddedBottomViewer log_every_messages must be positive"
+            )
 
     def should_log(self, current_message: int | None) -> bool:
         return current_message is None or current_message % self.log_every_messages == 0
@@ -48,7 +52,9 @@ class UnGriddedBottomViewer:
         pass
 
     @time_it(name="UnGriddedBottomViewer.log_points")
-    def log_points(self, points: list[Point3D], current_message: int | None = None) -> None:
+    def log_points(
+        self, points: list[Point3D], current_message: int | None = None
+    ) -> None:
         if not points:
             return
 
@@ -109,7 +115,9 @@ class GriddedBottomViewer:
         return averaged_points
 
     @time_it(name="GriddedBottomViewer.log_points")
-    def log_points(self, points: list[Point3D], current_message: int | None = None) -> None:
+    def log_points(
+        self, points: list[Point3D], current_message: int | None = None
+    ) -> None:
         self.add_points(points)
         if not self.should_log(current_message):
             return
@@ -140,7 +148,9 @@ class GriddedBottomSurfaceViewer:
 
     def __post_init__(self) -> None:
         if self.log_every_messages <= 0:
-            raise ValueError("GriddedBottomSurfaceViewer log_every_messages must be positive")
+            raise ValueError(
+                "GriddedBottomSurfaceViewer log_every_messages must be positive"
+            )
 
     def should_log(self, current_message: int | None) -> bool:
         return current_message is None or current_message % self.log_every_messages == 0
@@ -192,7 +202,9 @@ class GriddedBottomSurfaceViewer:
                 vertex_colors=depth_colors(vertex_positions),
             )
         )
-        logging.info(f"Logged gridded bottom surface with {len(triangle_indices)} triangles")
+        logging.info(
+            f"Logged gridded bottom surface with {len(triangle_indices)} triangles"
+        )
 
 
 @dataclass
@@ -206,7 +218,9 @@ class LiveBottomSurfaceViewer:
 
     def __post_init__(self) -> None:
         if self.log_every_messages <= 0:
-            raise ValueError("LiveBottomSurfaceViewer log_every_messages must be positive")
+            raise ValueError(
+                "LiveBottomSurfaceViewer log_every_messages must be positive"
+            )
         if self.tuning_factor <= 0.0:
             raise ValueError("LiveBottomSurfaceViewer tuning_factor must be positive")
 
@@ -236,7 +250,9 @@ class LiveBottomSurfaceViewer:
 
         def skip_triangle(a: LiveVertex, b: LiveVertex, c: LiveVertex) -> bool:
             max_down_range = max(a.down_range_m, b.down_range_m, c.down_range_m)
-            max_edge_m = max_down_range * math.tan(hor_angle_spacing_rad) * self.tuning_factor
+            max_edge_m = (
+                max_down_range * math.tan(hor_angle_spacing_rad) * self.tuning_factor
+            )
             max_edge_m = max(max_edge_m, self.min_edge)
             edge_lengths = (
                 math.dist(a.position, b.position),
@@ -265,4 +281,6 @@ class LiveBottomSurfaceViewer:
                 vertex_colors=depth_colors(vertex_positions),
             )
         )
-        logging.info(f"Logged live bottom surface with {len(triangle_indices)} triangles")
+        logging.info(
+            f"Logged live bottom surface with {len(triangle_indices)} triangles"
+        )

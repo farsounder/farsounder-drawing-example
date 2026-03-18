@@ -15,5 +15,3 @@ def time_it(name: str) -> Callable:
         return wrapper
 
     return decorator
-
-

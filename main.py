@@ -10,7 +10,11 @@ from farsounder.proto import nav_api_pb2
 
 from lib.backends import get_viewer_backend, BACKENDS
 from lib.config import GRID_INTERVAL_M
-from lib.navigation import BottomGeoReference, has_valid_navigation, local_bottom_vertices
+from lib.navigation import (
+    BottomGeoReference,
+    has_valid_navigation,
+    local_bottom_vertices,
+)
 from lib.viewers import (
     GriddedBottomSurfaceViewer,
     GriddedBottomViewer,
@@ -31,9 +35,19 @@ def get_message_counter() -> Callable[[], int]:
 
 
 def handle_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Visualize Argos data using the Python SDK")
-    parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Log level")
-    parser.add_argument("--ui", type=str, default="rerun", choices=BACKENDS.keys(), help="UI to use")
+    parser = argparse.ArgumentParser(
+        description="Visualize Argos data using the Python SDK"
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Log level",
+    )
+    parser.add_argument(
+        "--ui", type=str, default="rerun", choices=BACKENDS.keys(), help="UI to use"
+    )
     return parser.parse_args()
 
 
