@@ -5,12 +5,10 @@ import logging
 import time
 from typing import Callable
 
-import rerun as rr
-
 from farsounder import config, subscriber
 from farsounder.proto import nav_api_pb2
 
-from lib.backends import build_rerun_viewer_backend
+from lib.backends import get_viewer_backend, BACKENDS
 from lib.config import GRID_INTERVAL_M
 from lib.navigation import BottomGeoReference, has_valid_navigation, local_bottom_vertices
 from lib.viewers import (
@@ -35,7 +33,7 @@ def get_message_counter() -> Callable[[], int]:
 def handle_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize Argos data using the Python SDK")
     parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Log level")
-    parser.add_argument("--ui", type=str, default="rerun", choices=["rerun"], help="UI to use")
+    parser.add_argument("--ui", type=str, default="rerun", choices=BACKENDS.keys(), help="UI to use")
     return parser.parse_args()
 
 
@@ -43,11 +41,8 @@ def main() -> None:
     args = handle_arguments()
     logging.basicConfig(level=args.log_level)
 
-    if args.ui != "rerun":
-        raise ValueError(f"Unsupported UI: {args.ui}, only rerun is supported currently")
-
-    logging.info("Initializing ReRun viewer")
-    viewer_backend = build_rerun_viewer_backend()
+    logging.info("Initializing viewer")
+    viewer_backend = get_viewer_backend(args.ui)
     viewer_backend.init()
 
     cfg = config.build_config(

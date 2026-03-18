@@ -1,9 +1,13 @@
+from typing import Literal, TypeAlias
+from typing import Callable
 import rerun as rr
 
 from lib.models import MeshRender, PointsRender, ViewerBackend
 
 
-def build_rerun_viewer_backend() -> ViewerBackend:
+BackendName: TypeAlias = Literal["rerun"]
+
+def _build_rerun_viewer_backend() -> ViewerBackend:
 
     def init() -> None:
         rr.init("Argos SDK Example", spawn=True)
@@ -39,3 +43,10 @@ def build_rerun_viewer_backend() -> ViewerBackend:
         log_mesh=log_mesh,
         clear=clear,
     )
+
+BACKENDS: dict[BackendName, Callable[[], ViewerBackend]] = {
+    "rerun": _build_rerun_viewer_backend,
+}
+
+def get_viewer_backend(ui: BackendName) -> ViewerBackend:
+    return BACKENDS[ui]()
