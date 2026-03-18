@@ -5,7 +5,7 @@ This is a simple visualization that subscribes to data from the the Argos system
 The only currently support display backend is [rerun.io](https://rerun.io/) - but I tried to set it up in such a that it could be used to test out and prototype other systems and see an example of how to get the proto data etc.
 
 It's set up to show:
-- a point cloud of the bottom, accumulated each ping
+- a point cloud of the bottoms and targets, accumulated each ping
 - a grid (1 meter but configurable - only sent every 10 pings - configurable)
 - a surface mesh made from the 1m grid (sent even less as it's slow)
 - a realtime surface mesh from the live bottoms (each ping)
