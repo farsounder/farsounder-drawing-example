@@ -54,13 +54,18 @@ class UnGriddedBottomViewer:
 
     @time_it(name="UnGriddedBottomViewer.log_points")
     def log_points(
-        self, points: list[Point3D], current_message: int | None = None
+        self,
+        vertices: list[LiveVertex],
+        current_message: int | None = None,
+        message: nav_api_pb2.TargetData | None = None,
     ) -> None:
-        if not points:
+        if not vertices:
             return
 
         if not self.should_log(current_message):
             return
+
+        points = [vertex.position for vertex in vertices]
 
         self.point_logger(
             PointsRender(
@@ -94,13 +99,18 @@ class RawTargetViewer:
 
     @time_it(name="UnGriddedBottomViewer.log_points")
     def log_points(
-        self, points: list[Point3D], current_message: int | None = None
+        self,
+        vertices: list[LiveVertex],
+        current_message: int | None = None,
+        message: nav_api_pb2.TargetData | None = None,
     ) -> None:
-        if not points:
+        if not vertices:
             return
 
         if not self.should_log(current_message):
             return
+
+        points = [vertex.position for vertex in vertices]
 
         self.point_logger(
             PointsRender(
@@ -120,6 +130,12 @@ class GriddedBottomViewer:
     entity_path: str = "world/bottom/gridded"
     point_radius: float = 0.3
     log_every_messages: int = GRIDDED_LOG_EVERY_MESSAGES
+    show_surface: bool = False
+    mesh_logger: MeshLogger | None = None
+    clear_logger: ClearLogger | None = None
+    surface_entity_path: str = "world/bottom/gridded_surface"
+    surface_log_every_messages: int = GRIDDED_SURFACE_LOG_EVERY_MESSAGES
+    surface_min_edge: float = TIN_MIN_EDGE
     cells: dict[tuple[int, int], GriddedCell] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -127,15 +143,39 @@ class GriddedBottomViewer:
             raise ValueError("GriddedBottomViewer interval must be positive")
         if self.log_every_messages <= 0:
             raise ValueError("GriddedBottomViewer log_every_messages must be positive")
+        if self.surface_log_every_messages <= 0:
+            raise ValueError(
+                "GriddedBottomViewer surface_log_every_messages must be positive"
+            )
+        if self.surface_min_edge <= 0.0:
+            raise ValueError("GriddedBottomViewer surface_min_edge must be positive")
+        if self.show_surface and (
+            self.mesh_logger is None or self.clear_logger is None
+        ):
+            raise ValueError(
+                "GriddedBottomViewer requires mesh_logger and clear_logger when show_surface is enabled"
+            )
 
     def reset(self) -> None:
         self.cells.clear()
+        self.reset_surface()
+
+    def reset_surface(self) -> None:
+        if self.show_surface and self.clear_logger is not None:
+            self.clear_logger(self.surface_entity_path)
 
     def should_log(self, current_message: int | None) -> bool:
         return current_message is None or current_message % self.log_every_messages == 0
 
-    def add_points(self, points: list[Point3D]) -> None:
-        for x_m, y_m, depth_m in points:
+    def should_log_surface(self, current_message: int | None) -> bool:
+        return (
+            current_message is None
+            or current_message % self.surface_log_every_messages == 0
+        )
+
+    def add_points(self, vertices: list[LiveVertex]) -> None:
+        for vertex in vertices:
+            x_m, y_m, depth_m = vertex.position
             cell_key = (
                 math.floor(x_m / self.interval_m),
                 math.floor(y_m / self.interval_m),
@@ -155,28 +195,75 @@ class GriddedBottomViewer:
             )
         return averaged_points
 
-    @time_it(name="GriddedBottomViewer.log_points")
-    def log_points(
-        self, points: list[Point3D], current_message: int | None = None
-    ) -> None:
-        self.add_points(points)
-        if not self.should_log(current_message):
+    def log_surface(self) -> None:
+        if not self.show_surface:
             return
-
         if not self.cells:
+            self.reset_surface()
             return
 
-        averaged_points = self.averaged_points()
+        vertices = gridded_cell_vertices(self.cells, self.interval_m)
 
-        self.point_logger(
-            PointsRender(
-                entity_path=self.entity_path,
-                points=averaged_points,
-                colors=depth_colors(averaged_points),
-                radii=self.point_radius,
+        def skip_triangle(a: Vertex, b: Vertex, c: Vertex) -> bool:
+            edge_lengths = (
+                math.dist(a.position, b.position),
+                math.dist(b.position, c.position),
+                math.dist(c.position, a.position),
+            )
+            return any(
+                edge_length > self.surface_min_edge for edge_length in edge_lengths
+            )
+
+        triangle_indices = delaunay_triangle_indices(
+            vertices,
+            cull_triangle_func=skip_triangle,
+        )
+        if not triangle_indices:
+            self.reset_surface()
+            return
+
+        vertex_positions = [vertex.position for vertex in vertices]
+        vertex_normals = mesh_vertex_normals(vertex_positions, triangle_indices)
+
+        if self.mesh_logger is None:
+            raise ValueError("GriddedBottomViewer mesh_logger is not configured")
+
+        self.mesh_logger(
+            MeshRender(
+                entity_path=self.surface_entity_path,
+                vertex_positions=vertex_positions,
+                triangle_indices=triangle_indices,
+                vertex_normals=vertex_normals,
+                vertex_colors=depth_colors(vertex_positions),
             )
         )
-        logging.info(f"Logged {len(averaged_points)} gridded bottom cells")
+        logging.info(
+            f"Logged gridded bottom surface with {len(triangle_indices)} triangles"
+        )
+
+    @time_it(name="GriddedBottomViewer.log_points")
+    def log_points(
+        self,
+        vertices: list[LiveVertex],
+        current_message: int | None = None,
+        message: nav_api_pb2.TargetData | None = None,
+    ) -> None:
+        self.add_points(vertices)
+        if self.should_log(current_message):
+            if self.cells:
+                averaged_points = self.averaged_points()
+                self.point_logger(
+                    PointsRender(
+                        entity_path=self.entity_path,
+                        points=averaged_points,
+                        colors=depth_colors(averaged_points),
+                        radii=self.point_radius,
+                    )
+                )
+                logging.info(f"Logged {len(averaged_points)} gridded bottom cells")
+
+        if self.show_surface and self.should_log_surface(current_message):
+            self.log_surface()
 
 
 @dataclass
@@ -203,8 +290,9 @@ class GriddedTargetViewer:
     def should_log(self, current_message: int | None) -> bool:
         return current_message is None or current_message % self.log_every_messages == 0
 
-    def add_points(self, points: list[Point3D]) -> None:
-        for x_m, y_m, depth_m in points:
+    def add_points(self, vertices: list[LiveVertex]) -> None:
+        for vertex in vertices:
+            x_m, y_m, depth_m = vertex.position
             cell_key = (
                 math.floor(x_m / self.interval_m),
                 math.floor(y_m / self.interval_m),
@@ -228,9 +316,12 @@ class GriddedTargetViewer:
 
     @time_it(name="GriddedTargetViewer.log_points")
     def log_points(
-        self, points: list[Point3D], current_message: int | None = None
+        self,
+        vertices: list[LiveVertex],
+        current_message: int | None = None,
+        message: nav_api_pb2.TargetData | None = None,
     ) -> None:
-        self.add_points(points)
+        self.add_points(vertices)
         if not self.should_log(current_message):
             return
 
@@ -254,75 +345,6 @@ class GriddedTargetViewer:
         )
         logging.info(
             f"Logged {len(averaged_points)} gridded target cells with at least {self.min_points_per_cell} points"
-        )
-
-
-@dataclass
-class GriddedBottomSurfaceViewer:
-    mesh_logger: MeshLogger
-    clear_logger: ClearLogger
-    entity_path: str = "world/bottom/gridded_surface"
-    log_every_messages: int = GRIDDED_SURFACE_LOG_EVERY_MESSAGES
-    min_edge: float = TIN_MIN_EDGE
-
-    def __post_init__(self) -> None:
-        if self.log_every_messages <= 0:
-            raise ValueError(
-                "GriddedBottomSurfaceViewer log_every_messages must be positive"
-            )
-
-    def should_log(self, current_message: int | None) -> bool:
-        return current_message is None or current_message % self.log_every_messages == 0
-
-    def reset(self) -> None:
-        self.clear_logger(self.entity_path)
-
-    @time_it(name="GriddedBottomSurfaceViewer.log_points")
-    def log_points(
-        self,
-        cells: dict[tuple[int, int], GriddedCell],
-        interval_m: float,
-        current_message: int | None = None,
-    ) -> None:
-        if not self.should_log(current_message):
-            return
-
-        if not cells:
-            self.reset()
-            return
-
-        vertices = gridded_cell_vertices(cells, interval_m)
-
-        def skip_triangle(a: Vertex, b: Vertex, c: Vertex) -> bool:
-            edge_lengths = (
-                math.dist(a.position, b.position),
-                math.dist(b.position, c.position),
-                math.dist(c.position, a.position),
-            )
-            return any(edge_length > self.min_edge for edge_length in edge_lengths)
-
-        triangle_indices = delaunay_triangle_indices(
-            vertices,
-            cull_triangle_func=skip_triangle,
-        )
-        if not triangle_indices:
-            self.reset()
-            return
-
-        vertex_positions = [vertex.position for vertex in vertices]
-        vertex_normals = mesh_vertex_normals(vertex_positions, triangle_indices)
-
-        self.mesh_logger(
-            MeshRender(
-                entity_path=self.entity_path,
-                vertex_positions=vertex_positions,
-                triangle_indices=triangle_indices,
-                vertex_normals=vertex_normals,
-                vertex_colors=depth_colors(vertex_positions),
-            )
-        )
-        logging.info(
-            f"Logged gridded bottom surface with {len(triangle_indices)} triangles"
         )
 
 
@@ -353,8 +375,8 @@ class LiveBottomSurfaceViewer:
     def log_points(
         self,
         vertices: list[LiveVertex],
-        message: nav_api_pb2.TargetData,
         current_message: int | None = None,
+        message: nav_api_pb2.TargetData | None = None,
     ) -> None:
         if not self.should_log(current_message):
             return

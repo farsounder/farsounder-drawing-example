@@ -6,7 +6,7 @@ import utm
 
 from farsounder.proto import nav_api_pb2
 
-from lib.models import LiveVertex, Point3D, ZoneId
+from lib.models import LiveVertex, ZoneId
 from lib.time import time_it
 
 
@@ -123,7 +123,7 @@ def local_bottom_vertices(
 def local_iwt_vertices(
     message: nav_api_pb2.TargetData,
     geo_reference: BottomGeoReference,
-) -> tuple[list[Point3D], bool]:
+) -> tuple[list[LiveVertex], bool]:
     boat_easting, boat_northing, zone_id = boat_position_to_utm(message)
     zone_changed = geo_reference.update((boat_easting, boat_northing), zone_id)
     heading_deg = message.heading.heading
@@ -131,7 +131,7 @@ def local_iwt_vertices(
         (boat_easting, boat_northing)
     )
 
-    points: list[Point3D] = []
+    vertices: list[LiveVertex] = []
     for group in message.groups:
         for target_bin in group.bins:
             values = (
@@ -152,15 +152,18 @@ def local_iwt_vertices(
                 right_m=right_m,
                 heading_deg=heading_deg,
             )
-            points.append(
-                (
-                    local_easting + east_offset,
-                    local_northing + north_offset,
-                    target_bin.depth,
+            vertices.append(
+                LiveVertex(
+                    position=(
+                        local_easting + east_offset,
+                        local_northing + north_offset,
+                        target_bin.depth,
+                    ),
+                    down_range_m=target_bin.down_range,
                 )
             )
 
-    return points, zone_changed
+    return vertices, zone_changed
 
 
 def get_horizontal_angle_spacing_rad(message: nav_api_pb2.TargetData) -> float | None:
