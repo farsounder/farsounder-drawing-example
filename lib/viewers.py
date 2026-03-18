@@ -7,6 +7,7 @@ from farsounder.proto import nav_api_pb2
 from lib.config import (
     GRIDDED_LOG_EVERY_MESSAGES,
     GRIDDED_SURFACE_LOG_EVERY_MESSAGES,
+    GRIDDED_TARGET_MIN_POINTS_PER_CELL,
     TIN_MIN_EDGE,
     TIN_TUNING_FACTOR,
     UNGRIDDED_LOG_EVERY_MESSAGES,
@@ -36,6 +37,46 @@ from lib.time import time_it
 class UnGriddedBottomViewer:
     point_logger: PointLogger
     entity_path: str = "world/bottom/ungridded"
+    point_radius: float = 0.2
+    log_every_messages: int = UNGRIDDED_LOG_EVERY_MESSAGES
+
+    def __post_init__(self) -> None:
+        if self.log_every_messages <= 0:
+            raise ValueError(
+                "UnGriddedBottomViewer log_every_messages must be positive"
+            )
+
+    def should_log(self, current_message: int | None) -> bool:
+        return current_message is None or current_message % self.log_every_messages == 0
+
+    def reset(self) -> None:
+        pass
+
+    @time_it(name="UnGriddedBottomViewer.log_points")
+    def log_points(
+        self, points: list[Point3D], current_message: int | None = None
+    ) -> None:
+        if not points:
+            return
+
+        if not self.should_log(current_message):
+            return
+
+        self.point_logger(
+            PointsRender(
+                entity_path=f"{self.entity_path}/ping{current_message}",
+                points=points,
+                colors=depth_colors(points),
+                radii=self.point_radius,
+            )
+        )
+        logging.info(f"Logged {len(points)} raw bottom points")
+
+
+@dataclass
+class RawTargetViewer:
+    point_logger: PointLogger
+    entity_path: str = "world/targets/raw"
     point_radius: float = 0.2
     log_every_messages: int = UNGRIDDED_LOG_EVERY_MESSAGES
 
@@ -136,6 +177,84 @@ class GriddedBottomViewer:
             )
         )
         logging.info(f"Logged {len(averaged_points)} gridded bottom cells")
+
+
+@dataclass
+class GriddedTargetViewer:
+    interval_m: float
+    point_logger: PointLogger
+    entity_path: str = "world/targets/gridded"
+    point_radius: float = 0.3
+    log_every_messages: int = GRIDDED_LOG_EVERY_MESSAGES
+    min_points_per_cell: int = GRIDDED_TARGET_MIN_POINTS_PER_CELL
+    cells: dict[tuple[int, int], GriddedCell] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.interval_m <= 0.0:
+            raise ValueError("GriddedTargetViewer interval must be positive")
+        if self.log_every_messages <= 0:
+            raise ValueError("GriddedTargetViewer log_every_messages must be positive")
+        if self.min_points_per_cell <= 0:
+            raise ValueError("GriddedTargetViewer min_points_per_cell must be positive")
+
+    def reset(self) -> None:
+        self.cells.clear()
+
+    def should_log(self, current_message: int | None) -> bool:
+        return current_message is None or current_message % self.log_every_messages == 0
+
+    def add_points(self, points: list[Point3D]) -> None:
+        for x_m, y_m, depth_m in points:
+            cell_key = (
+                math.floor(x_m / self.interval_m),
+                math.floor(y_m / self.interval_m),
+            )
+            cell = self.cells.setdefault(cell_key, GriddedCell())
+            cell.add_sample(depth_m)
+
+    def averaged_points(self) -> list[Point3D]:
+        averaged_points: list[Point3D] = []
+        for (cell_x, cell_y), cell in sorted(self.cells.items()):
+            if cell.sample_count < self.min_points_per_cell:
+                continue
+            averaged_points.append(
+                (
+                    (cell_x + 0.5) * self.interval_m,
+                    (cell_y + 0.5) * self.interval_m,
+                    cell.average_depth,
+                )
+            )
+        return averaged_points
+
+    @time_it(name="GriddedTargetViewer.log_points")
+    def log_points(
+        self, points: list[Point3D], current_message: int | None = None
+    ) -> None:
+        self.add_points(points)
+        if not self.should_log(current_message):
+            return
+
+        if not self.cells:
+            return
+
+        averaged_points = self.averaged_points()
+        if not averaged_points:
+            logging.info(
+                "Skipped gridded target log because no cells met the minimum point count"
+            )
+            return
+
+        self.point_logger(
+            PointsRender(
+                entity_path=self.entity_path,
+                points=averaged_points,
+                colors=depth_colors(averaged_points),
+                radii=self.point_radius,
+            )
+        )
+        logging.info(
+            f"Logged {len(averaged_points)} gridded target cells with at least {self.min_points_per_cell} points"
+        )
 
 
 @dataclass

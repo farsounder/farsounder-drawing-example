@@ -9,18 +9,16 @@ from farsounder import config, subscriber
 from farsounder.proto import nav_api_pb2
 
 from lib.backends import get_viewer_backend, BACKENDS
-from lib.config import GRID_INTERVAL_M
+from lib.config import (
+    GRID_INTERVAL_M,
+)
 from lib.navigation import (
     BottomGeoReference,
     has_valid_navigation,
     local_bottom_vertices,
+    local_iwt_vertices,
 )
-from lib.viewers import (
-    GriddedBottomSurfaceViewer,
-    GriddedBottomViewer,
-    LiveBottomSurfaceViewer,
-    UnGriddedBottomViewer,
-)
+import lib.viewers
 
 
 def get_message_counter() -> Callable[[], int]:
@@ -66,16 +64,22 @@ def main() -> None:
     sub = subscriber.subscribe(cfg)
 
     geo_reference = BottomGeoReference()
-    ungridded_viewer = UnGriddedBottomViewer(point_logger=viewer_backend.log_points)
-    gridded_viewer = GriddedBottomViewer(
+    ungridded_viewer = lib.viewers.UnGriddedBottomViewer(
+        point_logger=viewer_backend.log_points
+    )
+    raw_target_viewer = lib.viewers.RawTargetViewer(
+        point_logger=viewer_backend.log_points
+    )
+
+    gridded_viewer = lib.viewers.GriddedBottomViewer(
         interval_m=GRID_INTERVAL_M,
         point_logger=viewer_backend.log_points,
     )
-    gridded_surface_viewer = GriddedBottomSurfaceViewer(
+    gridded_surface_viewer = lib.viewers.GriddedBottomSurfaceViewer(
         mesh_logger=viewer_backend.log_mesh,
         clear_logger=viewer_backend.clear,
     )
-    live_surface_viewer = LiveBottomSurfaceViewer(
+    live_surface_viewer = lib.viewers.LiveBottomSurfaceViewer(
         mesh_logger=viewer_backend.log_mesh,
         clear_logger=viewer_backend.clear,
     )
@@ -88,17 +92,21 @@ def main() -> None:
 
         msg_num = message_counter()
         live_vertices, zone_changed = local_bottom_vertices(message, geo_reference)
+        live_iwt_points, _ = local_iwt_vertices(message, geo_reference)
 
         if zone_changed:
             ungridded_viewer.reset()
+            raw_target_viewer.reset()
             gridded_viewer.reset()
+
+        msg_num = None if zone_changed else msg_num
+        raw_target_viewer.log_points(live_iwt_points, current_message=msg_num)
 
         if not live_vertices:
             live_surface_viewer.reset()
             return
 
         points = [vertex.position for vertex in live_vertices]
-        msg_num = None if zone_changed else msg_num
         ungridded_viewer.log_points(points, current_message=msg_num)
         gridded_viewer.log_points(points, current_message=msg_num)
         gridded_surface_viewer.log_points(

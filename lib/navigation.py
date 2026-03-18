@@ -6,7 +6,7 @@ import utm
 
 from farsounder.proto import nav_api_pb2
 
-from lib.models import LiveVertex, ZoneId
+from lib.models import LiveVertex, Point3D, ZoneId
 from lib.time import time_it
 
 
@@ -117,6 +117,50 @@ def local_bottom_vertices(
         )
 
     return vertices, zone_changed
+
+
+@time_it(name="local_iwt_vertices")
+def local_iwt_vertices(
+    message: nav_api_pb2.TargetData,
+    geo_reference: BottomGeoReference,
+) -> tuple[list[Point3D], bool]:
+    boat_easting, boat_northing, zone_id = boat_position_to_utm(message)
+    zone_changed = geo_reference.update((boat_easting, boat_northing), zone_id)
+    heading_deg = message.heading.heading
+    local_easting, local_northing = geo_reference.to_local_xy(
+        (boat_easting, boat_northing)
+    )
+
+    points: list[Point3D] = []
+    for group in message.groups:
+        for target_bin in group.bins:
+            values = (
+                target_bin.cross_range,
+                target_bin.down_range,
+                target_bin.depth,
+                heading_deg,
+                boat_easting,
+                boat_northing,
+            )
+            if not all(math.isfinite(value) for value in values):
+                continue
+
+            # Target bins use the same boat-relative axes as bottom bins.
+            right_m = -target_bin.cross_range
+            east_offset, north_offset = rotate_boat_offset_to_world(
+                forward_m=target_bin.down_range,
+                right_m=right_m,
+                heading_deg=heading_deg,
+            )
+            points.append(
+                (
+                    local_easting + east_offset,
+                    local_northing + north_offset,
+                    target_bin.depth,
+                )
+            )
+
+    return points, zone_changed
 
 
 def get_horizontal_angle_spacing_rad(message: nav_api_pb2.TargetData) -> float | None:
