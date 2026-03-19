@@ -1,3 +1,5 @@
+This repo was archived as it was moved into: https://github.com/farsounder/SDK-Integration-Examples/tree/master/using_sdk
+
 # Argos Python SDK Usage Example
 
 This is a simple visualization that subscribes to data from the the Argos system and displays it. To use it the SonaSoftSDK demo needs to be running to process and send pre-recorded data (or an actual installation connected to hardware).
